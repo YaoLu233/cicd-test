@@ -31,6 +31,6 @@ runs:
         restore-keys: |
           ${{ runner.os }}-npm-cache-
 
-    - name: Install dependencies
+    - name: 📦 Install dependencies
       shell: bash
       run: npm ci
