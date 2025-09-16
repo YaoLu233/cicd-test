@@ -1,134 +1,185 @@
-name: React Native CI/CD
+name: Build
 
 on:
-  workflow_dispatch:
-    inputs:
-      buildType:
-        type: choice
-        description: "Build type to run"
-        options:
-          - prod-apk
-          - prod-aab
-          - all
-
-env:
-  EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-  NODE_OPTIONS: --openssl-legacy-provider
+  push:
+    branches:
+      - master
 
 jobs:
-  check-skip:
-    runs-on: ubuntu-latest
-    if: "!contains(github.event.head_commit.message, '[skip ci]')"
-    steps:
-      - name: Skip CI check
-        run: echo "Proceeding with workflow"
-
-  build-and-deploy:
-    needs: check-skip
-    if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')) || github.event_name == 'workflow_dispatch'
+  Android:
+    name: Android
     runs-on: ubuntu-latest
     steps:
-      - name: 🏗 Checkout repository
+      - name: Check out git repository
         uses: actions/checkout@v4
 
-      - name: 🏗 Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "yarn"
+      - name: Setup Env
+        uses: ./.github/actions/setup
 
-      - name: 📦 Install dependencies
+      - name: Build Packages
+        shell: bash
         run: |
-          yarn install
-          yarn global add eas-cli@latest
+          cd android
+          ./gradlew assembleRelease 
 
-      - name: 📱 Setup EAS build cache
-        uses: actions/cache@v3
-        with:
-          path: ~/.eas-build-local
-          key: ${{ runner.os }}-eas-build-local-${{ hashFiles('**/package.json') }}
-          restore-keys: |
-            ${{ runner.os }}-eas-build-local-
+      # Push tag to GitHub if package.json version's tag is not tagged
+      - name: Get package version
+        run: node -p -e '`PACKAGE_VERSION=${require("./package.json").version}`' >> $GITHUB_ENV
 
-      - name: 🔄 Verify EAS CLI installation
+      # - name: Create git tag
+      #   uses: pkgdeps/git-tag-action@v3
+      #   with:
+      #     github_token: ${{ secrets.GITHUB_TOKEN }}
+      #     github_repo: ${{ github.repository }}
+      #     version: ${{ env.PACKAGE_VERSION }}
+      #     git_commit_sha: ${{ github.sha }}
+      #     git_tag_prefix: "v"
+
+      - name: Generate file MD5
         run: |
-          echo "EAS CLI version:"
-          eas --version
+          cd android/app/build/outputs/apk/release
+          md5sum *.apk
 
-      - name: 📋 Fix package.json main entry
-        run: |
-          # Check if jq is installed, if not install it
-          if ! command -v jq &> /dev/null; then
-            echo "Installing jq..."
-            sudo apt-get update && sudo apt-get install -y jq
-          fi
-
-          # Fix the main entry in package.json
-          if [ -f ./package.json ]; then
-            # Create a backup
-            cp package.json package.json.bak
-            # Update the package.json
-            jq '.main = "node_modules/expo/AppEntry.js"' package.json > package.json.tmp && mv package.json.tmp package.json
-            echo "Updated package.json main entry"
-            cat package.json | grep "main"
-          else
-            echo "package.json not found"
-            exit 1
-          fi
-
-      - name: 📋 Update metro.config.js for SVG support
-        run: |
-          if [ -f ./metro.config.js ]; then
-            echo "Creating backup of metro.config.js"
-            cp ./metro.config.js ./metro.config.js.backup
-            echo "Updating metro.config.js to CommonJS format"
-            cat > ./metro.config.js << 'EOFMARKER'
-          /* eslint-disable @typescript-eslint/no-var-requires */
-          const { getDefaultConfig } = require('expo/metro-config');
-
-          const config = getDefaultConfig(__dirname);
-
-          const { transformer, resolver } = config;
-
-          config.transformer = {
-            ...transformer,
-            babelTransformerPath: require.resolve('react-native-svg-transformer/expo'),
-          };
-
-          config.resolver = {
-            ...resolver,
-            assetExts: resolver.assetExts.filter(ext => ext !== 'svg'),
-            sourceExts: [...resolver.sourceExts, 'svg'],
-          };
-
-          module.exports = config;
-          EOFMARKER
-            echo "metro.config.js updated to CommonJS format"
-          else
-            echo "metro.config.js not found"
-          fi
-
-      - name: 📱 Build Production APK
-        if: github.event.inputs.buildType == 'all' || github.event.inputs.buildType == 'prod-apk' || github.event_name == 'push'
-        run: |
-          export NODE_OPTIONS="--openssl-legacy-provider --max_old_space_size=4096"
-          eas build --platform android --profile production-apk --local --non-interactive --output=./app-prod.apk
+      - name: Upload Artifact
+        uses: ./.github/actions/upload-artifact
         env:
-          NODE_ENV: production
+          PACKAGE_VERSION: ${{ env.PACKAGE_VERSION }}
 
-      - name: 📱 Build Production AAB
-        if: github.event.inputs.buildType == 'all' || github.event.inputs.buildType == 'prod-aab' || github.event_name == 'push'
-        run: |
-          export NODE_OPTIONS="--openssl-legacy-provider --max_old_space_size=4096"
-          eas build --platform android --profile production --local --non-interactive --output=./app-prod.aab
-        env:
-          NODE_ENV: production
+  # Android_SL:
+  #   name: Android_SL
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Check out git repository
+  #       uses: actions/checkout@v4
+  #       with:
+  #         ref: statusbar_lyric
 
-      - name: 📦 Upload build artifacts to GitHub
-        uses: actions/upload-artifact@v4
+  #     - name: Setup Env
+  #       uses: ./.github/actions/setup
+
+  #     - name: Build Packages
+  #       shell: bash
+  #       run: |
+  #         cd android
+  #         echo ${{ secrets.KEYSTORE_STORE_FILE_BASE64 }} | base64 --decode > app/${{ secrets.KEYSTORE_STORE_FILE }}
+  #         ./gradlew assembleRelease -PMYAPP_UPLOAD_STORE_FILE='${{ secrets.KEYSTORE_STORE_FILE }}' -PMYAPP_UPLOAD_KEY_ALIAS='${{ secrets.KEYSTORE_KEY_ALIAS }}' -PMYAPP_UPLOAD_STORE_PASSWORD='${{ secrets.KEYSTORE_PASSWORD }}' -PMYAPP_UPLOAD_KEY_PASSWORD='${{ secrets.KEYSTORE_KEY_PASSWORD }}'
+  #         rm -f app/${{ secrets.KEYSTORE_STORE_FILE }}
+
+  #     # Push tag to GitHub if package.json version's tag is not tagged
+  #     - name: Get package version
+  #       run: |
+  #         node -p -e '`PACKAGE_VERSION=${require("./package.json").version}`' >> $GITHUB_ENV
+  #         echo "COMMIT_SHA=$(git show -s --format=%H)" >> $GITHUB_ENV
+
+  #     - name: Create git tag
+  #       uses: pkgdeps/git-tag-action@v3
+  #       with:
+  #         github_token: ${{ secrets.GITHUB_TOKEN }}
+  #         github_repo: ${{ github.repository }}
+  #         version: ${{ env.PACKAGE_VERSION }}
+  #         git_commit_sha: ${{ env.COMMIT_SHA }}
+  #         git_tag_prefix: "v"
+
+  #     - name: Generate file MD5
+  #       run: |
+  #         echo "current commit sha: ${{ env.COMMIT_SHA }}"
+  #         cd android/app/build/outputs/apk/release
+  #         md5sum *.apk
+
+  #     - name: Upload Artifact
+  #       uses: ./.github/actions/upload-artifact
+  #       env:
+  #         PACKAGE_TYPE: 'Android_SL'
+  #         PACKAGE_VERSION: ${{ env.PACKAGE_VERSION }}
+
+  # Android_5:
+  #   name: Android_5
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Check out git repository
+  #       uses: actions/checkout@v4
+  #       with:
+  #         ref: android_5
+
+  #     - name: Setup Env
+  #       uses: ./.github/actions/setup
+
+  #     - name: Build Packages
+  #       shell: bash
+  #       run: |
+  #         cd android
+  #         echo ${{ secrets.KEYSTORE_STORE_FILE_BASE64 }} | base64 --decode > app/${{ secrets.KEYSTORE_STORE_FILE }}
+  #         ./gradlew assembleRelease -PMYAPP_UPLOAD_STORE_FILE='${{ secrets.KEYSTORE_STORE_FILE }}' -PMYAPP_UPLOAD_KEY_ALIAS='${{ secrets.KEYSTORE_KEY_ALIAS }}' -PMYAPP_UPLOAD_STORE_PASSWORD='${{ secrets.KEYSTORE_PASSWORD }}' -PMYAPP_UPLOAD_KEY_PASSWORD='${{ secrets.KEYSTORE_KEY_PASSWORD }}'
+  #         rm -f app/${{ secrets.KEYSTORE_STORE_FILE }}
+
+  #     # Push tag to GitHub if package.json version's tag is not tagged
+  #     - name: Get package version
+  #       run: |
+  #         node -p -e '`PACKAGE_VERSION=${require("./package.json").version}`' >> $GITHUB_ENV
+  #         echo "COMMIT_SHA=$(git show -s --format=%H)" >> $GITHUB_ENV
+
+  #     - name: Create git tag
+  #       uses: pkgdeps/git-tag-action@v3
+  #       with:
+  #         github_token: ${{ secrets.GITHUB_TOKEN }}
+  #         github_repo: ${{ github.repository }}
+  #         version: ${{ env.PACKAGE_VERSION }}
+  #         git_commit_sha: ${{ env.COMMIT_SHA }}
+  #         git_tag_prefix: "v"
+
+  #     - name: Generate file MD5
+  #       run: |
+  #         echo "current commit sha: ${{ env.COMMIT_SHA }}"
+  #         cd android/app/build/outputs/apk/release
+  #         md5sum *.apk
+
+  #     - name: Upload Artifact
+  #       uses: ./.github/actions/upload-artifact
+  #       env:
+  #         PACKAGE_TYPE: 'Android_5'
+  #         PACKAGE_VERSION: ${{ env.PACKAGE_VERSION }}
+
+  # Release:
+    name: Release
+    runs-on: ubuntu-latest
+    # needs: [Android, Android_SL]
+    needs: [Android]
+    steps:
+      - name: Check out git repository
+        uses: actions/checkout@v4
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
         with:
-          name: app-builds
-          path: |
-            ./app-prod.apk
-            ./app-prod.aab
-          retention-days: 7
+          path: ./artifacts
+          merge-multiple: true
+
+      - name: Generate file MD5
+        run: |
+          echo -e '\n### File MD5\n```' >> ./publish/changeLog.md
+          cd artifacts
+          md5sum *.apk >> ../publish/changeLog.md
+          echo -e '```\n' >> ../publish/changeLog.md
+          echo -e '\n[软件安装包说明](https://lyswhut.github.io/lx-music-doc/download#%E8%BD%AF%E4%BB%B6%E5%AE%89%E8%A3%85%E5%8C%85%E8%AF%B4%E6%98%8E)\n' >> ../publish/changeLog.md
+
+      - name: Get package version
+        run: node -p -e '`PACKAGE_VERSION=${require("./package.json").version}`' >> $GITHUB_ENV
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: ./publish/changeLog.md
+          prerelease: false
+          draft: false
+          tag_name: v${{ env.PACKAGE_VERSION }}
+          files: |
+            artifacts/lx-music-mobile-v${{ env.PACKAGE_VERSION }}-arm64-v8a.apk
+            artifacts/lx-music-mobile-v${{ env.PACKAGE_VERSION }}-armeabi-v7a.apk
+            artifacts/lx-music-mobile-v${{ env.PACKAGE_VERSION }}-x86_64.apk
+            artifacts/lx-music-mobile-v${{ env.PACKAGE_VERSION }}-x86.apk
+            artifacts/lx-music-mobile-v${{ env.PACKAGE_VERSION }}-universal.apk
+
+          # artifacts/lx-music-mobile-v${{ env.PACKAGE_VERSION }}-sl-arm64-v8a.apk
+          # artifacts/lx-music-mobile-v${{ env.PACKAGE_VERSION }}-android_5-universal.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
