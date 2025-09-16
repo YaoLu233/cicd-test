@@ -36,8 +36,10 @@ jobs:
     - name: 🏗 Setup repo
       uses: actions/checkout@v4
 
-    - name: 🏗 Setup Env
-      uses: ./.github/actions/setup
+    - name: 🏗 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
 
     - name: 🏗 Setup Expo and EAS
       uses: expo/expo-github-action@v7
